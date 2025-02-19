@@ -6,11 +6,10 @@ from functools import wraps
 
 from cachetools import TTLCache, cached
 from wazuh.core.common import cache_event
-
-from api.configuration import security_conf
+from wazuh.core.config.client import CentralizedConfig
 
 # Tokens cache
-tokens_cache = TTLCache(maxsize=4500, ttl=security_conf['auth_token_exp_timeout'])
+tokens_cache = TTLCache(maxsize=4500, ttl=CentralizedConfig.get_management_api_config().jwt_expiration_timeout)
 
 
 def clear_cache():
@@ -18,18 +17,19 @@ def clear_cache():
     cache_event.set()
 
 
-def token_cache(cache):
+def token_cache(cache: TTLCache):
     """Apply cache depending on whether the request comes from the master node or from a worker node.
 
     Parameters
     ----------
     cache : TTLCache
-        Cache object
+        Cache object.
 
     Returns
     -------
     Requested function
     """
+
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -47,5 +47,7 @@ def token_cache(cache):
                 return f(*args, **kwargs)
 
             return func(*args, **kwargs)
+
         return wrapper
+
     return decorator

@@ -1,13 +1,14 @@
 ---
-name: API integration tests 
+name: Release Candidate - API integration tests
 about: Report the results after running API integration tests.
-title: 'Release [WAZUH VERSION] - Release Candidate [RC VERSION] - API integration tests'
-labels: 'API, qa'
+title: Release [WAZUH VERSION] - Release Candidate [RC VERSION] - API integration
+  tests
+labels: ''
 assignees: ''
 
 ---
 
-The following issue aims to run all [API integration tests](https://github.com/wazuh/wazuh/tree/master/api/test/integration) for the current release candidate, report the results, and open new issues for any encountered errors.
+The following issue aims to run all [API integration tests](https://github.com/wazuh/wazuh/tree/main/api/test/integration) for the current release candidate, report the results, and open new issues for any encountered errors.
 
 ## API integration tests information
 |                                          |                                            |
@@ -59,4 +60,4 @@ The definition of done for this one is the validation of the conclusions and the
 
 All checks from below must be accepted in order to close this issue.
 
-- [ ] 
+- [ ]

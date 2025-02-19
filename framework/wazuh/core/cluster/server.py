@@ -1,5 +1,6 @@
+# Copyright (C) 2015, Wazuh Inc.
 # Created by Wazuh, Inc. <info@wazuh.com>.
-# This program is free software; you can redistribute it and/or modify it under the terms of GPLv2
+# This program is a free software; you can redistribute it and/or modify it under the terms of GPLv2
 
 import asyncio
 import contextlib
@@ -7,27 +8,30 @@ import functools
 import inspect
 import itertools
 import logging
-import os
 import ssl
 import traceback
 from time import perf_counter
-from typing import Tuple, Dict
+from typing import Dict, Tuple
 from uuid import uuid4
 
 import uvloop
-
 from wazuh.core import common, exception, utils
 from wazuh.core.cluster import common as c_common
 from wazuh.core.cluster.utils import ClusterFilter, context_tag
+from wazuh.core.config.models.server import ServerConfig
 
 
 class AbstractServerHandler(c_common.Handler):
-    """
-    Define abstract server protocol. Handle communication with a single client.
-    """
+    """Define abstract server protocol. Handle communication with a single client."""
 
-    def __init__(self, server, loop: asyncio.AbstractEventLoop, fernet_key: str,
-                 cluster_items: Dict, logger: logging.Logger = None, tag: str = "Client"):
+    def __init__(
+        self,
+        server,
+        loop: asyncio.AbstractEventLoop,
+        server_config: ServerConfig,
+        logger: logging.Logger = None,
+        tag: str = 'Client',
+    ):
         """Class constructor.
 
         Parameters
@@ -36,17 +40,14 @@ class AbstractServerHandler(c_common.Handler):
             Abstract server object that created this handler.
         loop : asyncio.AbstractEventLoop
             Asyncio loop.
-        fernet_key : str
-            Key used to encrypt and decrypt messages.
-        cluster_items : dict
-            Cluster.json object containing cluster internal variables.
+        server_config : ServerConfig
+            Object containing server configuration variables.
         logger : Logger object
             Logger object to use.
         tag : str
             Log tag.
         """
-        super().__init__(fernet_key=fernet_key, logger=logger, tag=f"{tag} {str(uuid4().hex[:8])}",
-                         cluster_items=cluster_items)
+        super().__init__(logger=logger, tag=f'{tag} {str(uuid4().hex[:8])}', server_config=server_config)
         self.server = server
         self.loop = loop
         self.last_keepalive = utils.get_utc_now().timestamp()
@@ -98,7 +99,7 @@ class AbstractServerHandler(c_common.Handler):
         bytes
             Response message.
         """
-        if command == b"echo-c":
+        if command == b'echo-c':
             return self.echo_master(data)
         elif command == b'hello':
             return self.hello(data)
@@ -141,8 +142,8 @@ class AbstractServerHandler(c_common.Handler):
         self.name = data.decode()
         if self.name in self.server.clients:
             self.name = ''
-            raise exception.WazuhClusterError(3028, extra_message=data)
-        elif self.name == self.server.configuration['node_name']:
+            raise exception.WazuhClusterError(3028, extra_message=data.decode())
+        elif self.name == self.server.server_config.node.name:
             raise exception.WazuhClusterError(3029)
         else:
             self.server.clients[self.name] = self
@@ -167,7 +168,7 @@ class AbstractServerHandler(c_common.Handler):
             Result message.
         """
         if command == b'ok-c':
-            return b"Successful response from client: " + payload
+            return b'Successful response from client: ' + payload
         else:
             return super().process_response(command, payload)
 
@@ -183,19 +184,25 @@ class AbstractServerHandler(c_common.Handler):
         """
         if self.name:
             if exc is None:
-                self.logger.debug(f"Disconnected {self.name}.")
+                self.logger.debug(f'Disconnected {self.name}.')
             else:
-                self.logger.error(f"Error during connection with '{self.name}': {exc}.\n"
-                                  f"{''.join(traceback.format_tb(exc.__traceback__))}", exc_info=False)
+                self.logger.error(
+                    f"Error during connection with '{self.name}': {exc}.\n"
+                    f"{''.join(traceback.format_tb(exc.__traceback__))}",
+                    exc_info=False,
+                )
             if self.name in self.server.clients:
                 del self.server.clients[self.name]
             for task in self.handler_tasks:
                 task.cancel()
         elif exc is not None:
-            self.logger.error(f"Error during handshake with incoming connection: {exc}. \n"
-                              f"{''.join(traceback.format_tb(exc.__traceback__))}", exc_info=False)
+            self.logger.error(
+                f"Error during handshake with incoming connection: {exc}. \n"
+                f"{''.join(traceback.format_tb(exc.__traceback__))}",
+                exc_info=False,
+            )
         else:
-            self.logger.error("Error during handshake with incoming connection.", exc_info=False)
+            self.logger.error('Error during handshake with incoming connection.', exc_info=False)
 
     def add_request(self, broadcast_id, f, *args, **kwargs):
         """Add a request to the queue to execute a function in this server handler.
@@ -241,14 +248,18 @@ class AbstractServerHandler(c_common.Handler):
 
 
 class AbstractServer:
-    """
-    Define an asynchronous server. Handle connections from all clients.
-    """
+    """Define an asynchronous server. Handle connections from all clients."""
 
     NO_RESULT = 'no_result'
 
-    def __init__(self, performance_test: int, concurrency_test: int, configuration: Dict, cluster_items: Dict,
-                 enable_ssl: bool, logger: logging.Logger = None, tag: str = "Abstract Server"):
+    def __init__(
+        self,
+        performance_test: int,
+        concurrency_test: int,
+        server_config: ServerConfig,
+        logger: logging.Logger = None,
+        tag: str = 'Abstract Server',
+    ):
         """Class constructor.
 
         Parameters
@@ -257,12 +268,8 @@ class AbstractServer:
             Message length to use in the performance test.
         concurrency_test : int
             Number of requests to do in the concurrency test.
-        configuration : dict
-            ossec.conf cluster configuration.
-        cluster_items : dict
-            cluster.json cluster internal configuration.
-        enable_ssl : bool
-            Whether to enable asyncio's SSL support.
+        server_config : ServerConfig
+            Server configuration.
         logger : Logger object
             Logger to use.
         tag : str
@@ -271,9 +278,7 @@ class AbstractServer:
         self.clients = {}
         self.performance = performance_test
         self.concurrency = concurrency_test
-        self.configuration = configuration
-        self.cluster_items = cluster_items
-        self.enable_ssl = enable_ssl
+        self.server_config = server_config
         self.tag = tag
         self.logger = logging.getLogger('wazuh') if not logger else logger
         # logging tag
@@ -386,7 +391,7 @@ class AbstractServer:
         dict
             Basic information (ip, name).
         """
-        return {'info': {'ip': self.configuration['nodes'][0], 'name': self.configuration['node_name']}}
+        return {'info': {'ip': self.server_config.nodes[0], 'name': self.server_config.node.name}}
 
     def setup_task_logger(self, task_tag: str) -> logging.Logger:
         """Create logger with a task_tag.
@@ -405,9 +410,17 @@ class AbstractServer:
         task_logger.addFilter(ClusterFilter(tag=self.tag, subtag=task_tag))
         return task_logger
 
-    def get_connected_nodes(self, filter_node: str = None, offset: int = 0, limit: int = common.DATABASE_LIMIT,
-                            sort: Dict = None, search: Dict = None, select: Dict = None,
-                            filter_type: str = 'all') -> Dict:
+    def get_connected_nodes(
+        self,
+        filter_node: str = None,
+        offset: int = 0,
+        limit: int = common.DATABASE_LIMIT,
+        sort: Dict = None,
+        search: Dict = None,
+        select: Dict = None,
+        filter_type: str = 'all',
+        distinct: bool = False,
+    ) -> Dict:
         """Get all connected nodes, including the master node.
 
         Parameters
@@ -426,6 +439,8 @@ class AbstractServer:
             Select which fields to return (separated by comma).
         filter_type : str
             Type of node (worker/master).
+        distinct : bool
+            Look for distinct values.
 
         Returns
         -------
@@ -447,72 +462,84 @@ class AbstractServer:
                 Whether the node must be added to the result or not.
             """
             return (filter_node is None or node_info['name'] in filter_node) and (
-                        filter_type == 'all' or node_info['type'] == filter_type)
+                filter_type == 'all' or node_info['type'] == filter_type
+            )
 
         default_fields = self.to_dict()['info'].keys()
         if select is None:
             select = default_fields
         else:
             if not set(select).issubset(default_fields):
-                raise exception.WazuhError(1724, extra_message=', '.join(set(select) - default_fields),
-                                           extra_remediation=', '.join(default_fields))
+                raise exception.WazuhError(
+                    1724,
+                    extra_message=', '.join(set(select) - default_fields),
+                    extra_remediation=', '.join(default_fields),
+                )
 
         if filter_type != 'all' and filter_type not in {'worker', 'master'}:
             raise exception.WazuhError(1728)
 
         if filter_node is not None:
             filter_node = set(filter_node) if isinstance(filter_node, list) else {filter_node}
-            if not filter_node.issubset(set(itertools.chain(self.clients.keys(), [self.configuration['node_name']]))):
+            if not filter_node.issubset(set(itertools.chain(self.clients.keys(), [self.server_config.node.name]))):
                 raise exception.WazuhResourceNotFound(1730)
 
-        res = [val.to_dict()['info'] for val in itertools.chain([self], self.clients.values())
-               if return_node(val.to_dict()['info'])]
+        res = [
+            val.to_dict()['info']
+            for val in itertools.chain([self], self.clients.values())
+            if return_node(val.to_dict()['info'])
+        ]
 
-        return utils.process_array([{k: v[k] for k in select} for v in res],
-                                   search_text=search['value'] if search is not None else None,
-                                   complementary_search=search['negation'] if search is not None else False,
-                                   sort_by=sort['fields'] if sort is not None else None,
-                                   sort_ascending=False if sort is not None and sort['order'] == 'desc' else True,
-                                   allowed_sort_fields=default_fields,
-                                   offset=offset,
-                                   limit=limit)
+        return utils.process_array(
+            [{k: v[k] for k in select} for v in res],
+            search_text=search['value'] if search is not None else None,
+            complementary_search=search['negation'] if search is not None else False,
+            sort_by=sort['fields'] if sort is not None else None,
+            sort_ascending=False if sort is not None and sort['order'] == 'desc' else True,
+            allowed_sort_fields=default_fields,
+            offset=offset,
+            limit=limit,
+            distinct=distinct,
+        )
 
     async def check_clients_keepalive(self):
         """Check date of the last received keep alive.
 
         Task to check the date of the last received keep alive from clients. It is started when
-        the server starts and it runs every self.cluster_items['intervals']['master']['check_worker_lastkeepalive']
+        the server starts and it runs every check_worker_lastkeepalive defined in the configuration
         seconds.
         """
-        keep_alive_logger = self.setup_task_logger("Keep alive")
+        keep_alive_logger = self.setup_task_logger('Keep alive')
         while True:
-            keep_alive_logger.debug("Calculating.")
+            keep_alive_logger.debug('Calculating.')
             curr_timestamp = utils.get_utc_now().timestamp()
             # Iterate all clients and close the connection when their last keepalive is older than allowed.
             for client_name, client in self.clients.copy().items():
-                if curr_timestamp - client.last_keepalive > self.cluster_items['intervals']['master']['max_allowed_time_without_keepalive']:
-                    keep_alive_logger.error("No keep alives have been received from {} in the last minute. "
-                                            "Disconnecting".format(client_name), exc_info=False)
+                if (
+                    curr_timestamp - client.last_keepalive
+                    > self.server_config.master.intervals.max_allowed_time_without_keep_alive
+                ):
+                    keep_alive_logger.error(
+                        'No keep alives have been received from {} in the last minute. Disconnecting'.format(
+                            client_name
+                        ),
+                        exc_info=False,
+                    )
                     client.transport.close()
-            keep_alive_logger.debug("Calculated.")
-            await asyncio.sleep(self.cluster_items['intervals']['master']['check_worker_lastkeepalive'])
-
-    async def echo(self):
-        """Send an echo message to all clients every 3 seconds."""
-        while True:
-            for client_name, client in self.clients.items():
-                self.logger.debug(f"Sending echo to worker {client_name}")
-                self.logger.info((await client.send_request(b'echo-m', b'keepalive ' + client_name)).decode())
-            await asyncio.sleep(3)
+            keep_alive_logger.debug('Calculated.')
+            await asyncio.sleep(self.server_config.master.intervals.check_worker_last_keep_alive)
 
     async def performance_test(self):
         """Send a big message to all clients every 3 seconds."""
         while True:
             for client_name, client in self.clients.items():
-                before = perf_counter()
-                response = await client.send_request(b'echo', b'a' * self.performance)
-                after = perf_counter()
-                self.logger.info(f"Received size: {len(response)} // Time: {after - before}")
+                try:
+                    before = perf_counter()
+                    response = await client.send_request(b'echo', b'a' * self.performance)
+                    after = perf_counter()
+                    self.logger.info(f'Received size: {len(response)} // Time: {after - before}')
+                except Exception as e:
+                    self.logger.error(f'Error during performance test: {e}')
             await asyncio.sleep(3)
 
     async def concurrency_test(self):
@@ -521,9 +548,14 @@ class AbstractServer:
             before = perf_counter()
             for i in range(self.concurrency):
                 for client_name, client in self.clients.items():
-                    await client.send_request(b'echo', f'concurrency {i} client {client_name}'.encode())
+                    try:
+                        await client.send_request(b'echo', f'concurrency {i} client {client_name}'.encode())
+                    except Exception as e:
+                        self.logger.error(
+                            f'Error during concurrency test ({i+1}/{self.concurrency}, {client_name}): ' f'{e}'
+                        )
             after = perf_counter()
-            self.logger.info(f"Time sending {self.concurrency} messages: {after - before}")
+            self.logger.info(f'Time sending {self.concurrency} messages: {after - before}')
             await asyncio.sleep(10)
 
     async def start(self):
@@ -533,22 +565,26 @@ class AbstractServer:
         asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
         self.loop.set_exception_handler(c_common.asyncio_exception_handler)
 
-        if self.enable_ssl:
-            ssl_context = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
-            ssl_context.load_cert_chain(certfile=os.path.join(common.WAZUH_PATH, 'etc', 'sslmanager.cert'),
-                                        keyfile=os.path.join(common.WAZUH_PATH, 'etc', 'sslmanager.key'))
-        else:
-            ssl_context = None
+        ssl_context = c_common.create_ssl_context(
+            self.logger,
+            ssl.Purpose.CLIENT_AUTH,
+            self.server_config.node.ssl.ca,
+            self.server_config.node.ssl.cert,
+            self.server_config.node.ssl.key,
+            self.server_config.node.ssl.keyfile_password,
+        )
 
         try:
             server = await self.loop.create_server(
-                protocol_factory=lambda: self.handler_class(server=self, loop=self.loop, logger=self.logger,
-                                                            fernet_key=self.configuration['key'],
-                                                            cluster_items=self.cluster_items),
-                host=self.configuration['bind_addr'], port=self.configuration['port'], ssl=ssl_context)
+                protocol_factory=lambda: self.handler_class(
+                    server=self, loop=self.loop, logger=self.logger, server_config=self.server_config
+                ),
+                host=self.server_config.bind_addr,
+                port=self.server_config.port,
+                ssl=ssl_context,
+            )
         except OSError as e:
-            self.logger.error(f"Could not start master: {e}")
-            raise KeyboardInterrupt
+            raise exception.WazuhClusterError(3007, extra_message=e)
 
         self.logger.info(f'Serving on {server.sockets[0].getsockname()}')
         self.tasks.append(server.serve_forever)
